@@ -1,8 +1,8 @@
 //------------------------------------------------------------------//
 //Supported MCU:   ESP32 (M5Stack)
-//File Contents:   HoverSat EjectionSystem
+//File Contents:   S.BUS Test
 //Version number:  Ver.1.0
-//Date:            2019.12.29
+//Date:            2020.02.28
 //------------------------------------------------------------------//
  
 //This program supports the following boards:
@@ -11,52 +11,68 @@
 //Include
 //------------------------------------------------------------------//
 #include <M5Stack.h>
+#include "SBUS2.h"
+#include "SBUS_usart.h"
 
-int count;
-long interval;
+#define TEMPRATURE_SLOT   1     // 1 Slot Sensor
+#define RPM_SLOT          2     // 1 Slot Sensor
+#define CURRENT_SLOT      3     // 3 Slot Sensor
+      //CURRENT_SLOT      4
+      //CURRENT_SLOT      5
+#define ERROR_SLOT        6     // 1 Slot Sensor
+
+#define GPS_SLOT          8     // 8 Slot Sensor
+
+// Koordinaten Berlin Fernsehturm  = Grad Minuten  = Dezimalgrad = Grad Minuten Sekunden
+int32_t latitude = 52312499;    // = N 52° 31.2499 = N 52.520833 = N 52° 31' 14.9988"
+int32_t longitude = 13245658;   // = E 13° 24.5658 = E 13.409430 = E 13° 24' 33.9480"
+
+int16_t channel = 0;
+
+
 void setup() {
- Serial.begin(115200); // Terminal
- Serial2.begin(100000,SERIAL_8E2); // S-BUS
- count=0;
+
+  SBUS2_Setup();
+
+  while(!SBUS2_Ready()){
+    // Wait for valid SBUS2 Signal
+  }
+  
+  // GPS Distance and Altitude is set to Zero with the first GPS Telemetry Data
+  // GPS Distance and Altitude is calculated with changing Latitude, Longitude and Altitude
+  for(uint8_t i; i< 10; i++){
+    send_f1675_gps(GPS_SLOT, (uint16_t)0, (int16_t)0, (int16_t) 0, (latitude+100), (longitude+100));           // Speed = 0km/h, Altitude = 0m, Vario = 0m/s
+    delay(50);
+  }
+  digitalWrite(13, HIGH);          // set pin D13 (LED ON) -> Setup finished
+  
 }
 
 void loop() {
- int data[26];
- int val[19];
- int i;
- if (Serial2.available() > 0) {
- data[count]=Serial2.read();
- interval=millis();
- count++;
- }
- if ((interval+4 < millis()) && (0 < count) ) {
- count=0;
+  uint16_t uart_dropped_frame = 0;
+  bool transmision_dropt_frame = false;
+  bool failsave = false;
 
- val[0] =((data[1] & 0xff)<<0) + ((data[2] & 0x07)<<8);
- val[1] =((data[2] & 0xf8)>>3) + ((data[3] & 0x3f)<<5);
- val[2] =((data[3] & 0xc0)>>6) + ((data[4] & 0xff)<<2) + ((data[5] & 0x01)<<10);
- val[3] =((data[5] & 0xfe)>>1) + ((data[6] & 0x0f)<<7);
- val[4] =((data[6] & 0x0f)>>4) + ((data[7] & 0x7f)<<4);
- val[5] =((data[7] & 0x80)>>7) + ((data[8] & 0xff)<<1) + ((data[9] & 0x03) <<9);
- val[6] =((data[9] & 0x7c)>>2) + ((data[10] & 0x1f)<<6);
- val[7] =((data[10] & 0xe0)>>5) + ((data[11] & 0xff)<<3);
+  /* DO YOUR STUFF HERE */
+  /* Make sure you do not do any blocking calls in the loop, e.g. delay()!!! */
 
- val[8] =((data[12] & 0xff)<<0) + ((data[13] & 0x07)<<8);
- val[9] =((data[13] & 0xf8)>>3) + ((data[14] & 0x3f)<<5);
- val[10]=((data[14] & 0xc0)>>6) + ((data[15] & 0xff)<<2) + ((data[16] & 0x01)<<10);
- val[11]=((data[16] & 0xfe)>>1) + ((data[17] & 0x0f)<<7);
- val[12]=((data[17] & 0x0f)>>4) + ((data[18] & 0x7f)<<4);
- val[13]=((data[18] & 0x80)>>7) + ((data[19] & 0xff)<<1) + ((data[20] & 0x03) <<9);
- val[14]=((data[20] & 0x7c)>>2) + ((data[21] & 0x1f)<<6);
- val[15]=((data[21] & 0xe0)>>5) + ((data[22] & 0xff)<<3);
- val[16] = (data[23] & 0x1) ? 0x7ff : 0 ;
- val[17] = (data[23] & 0x2) ? 0x7ff : 0 ;
- val[18] = (data[23] & 0x8) ? 0x7ff : 0 ; // Failsafe
+  
+  if(SBUS_Ready()){                             // SBUS Frames available -> Ready for getting Servo Data
+    channel = SBUS2_get_servo_data( 5 );        // Channel = Servo Value of Channel 5
+  }
+  
+  if(SBUS2_Ready()){                                                                                                // set pin D13 (LED ON) -> SBUS2 Frames OK                                      
+    SBUS2_get_status(&uart_dropped_frame, &transmision_dropt_frame, &failsave);                                     // Check SBUS(2) Status
+    send_alarm_as_temp125(ERROR_SLOT, ((failsave*1000) + (transmision_dropt_frame*100) + uart_dropped_frame));      // Warning with over Temp at Error Slot
+      
+    send_temp125(TEMPRATURE_SLOT, (int16_t)50);                                                                     // Temperature [°C]
+    send_RPM(RPM_SLOT,(uint16_t)600);                                                                               // RPM = 600-> rounding Error +/- 3 RPM
+    send_s1678_current(CURRENT_SLOT,(uint16_t)2345,(uint16_t)15000,(uint16_t)1234);                                 // Current = 23.45A, Capacity = 15000mAh, Voltage = 12.34V
+      
+    send_f1675_gps(GPS_SLOT, (uint16_t)50, (int16_t)1000, (int16_t) 200, latitude, longitude);                      // Speed = 50km/h, Altitude = 1000m, Vario = 200m/s
+  }
+  else{                                                                                        // set pin D13 (LED OFF) -> No SBUS2 Frames
+  }
 
- for (i=0 ; i<19; i++ ) {
- Serial.print(val[i],DEC);
- Serial.print(F(" "));
- }
- Serial.print(F("\n"));
- }
-}
+
+} // End of Loop()
